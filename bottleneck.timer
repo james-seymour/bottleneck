@@ -4,10 +4,10 @@ Requires=bottleneck.service
 
 [Timer]
 # Run every 10 minutes between 6:00-9:00 AM
-OnCalendar=Australia/Brisbane *-*-* 06,07,08:00/10:00
+OnCalendar=*-*-* 06,07,08:00/10:00
 
 # Run every 10 minutes between 8:00-9:00 PM
-OnCalendar=Australia/Brisbane *-*-* 20:00/10:00
+OnCalendar=*-*-* 20:00/10:00
 
 # Run 5 minutes after boot if missed
 Persistent=true
