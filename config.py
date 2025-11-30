@@ -93,8 +93,6 @@ class NotifiedEvents:
     @staticmethod
     def from_config(config: Config) -> NotifiedEvents:
         if not (path := config.NOTIFIED_EVENTS_PATH).exists():
-            path.touch()
-
             return NotifiedEvents(
                 path=path, model=NotifiedEvents.Model(events=[], version=1)
             )
