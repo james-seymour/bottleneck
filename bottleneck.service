@@ -8,12 +8,12 @@ User=root
 WorkingDirectory=/bottleneck
 
 # Run the script with uv
-ExecStart=/root/.local/bin/uv run --env-file .env your_script.py
+ExecStart=/root/.local/bin/uv run --env-file .env main.py
 
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=my-script
+SyslogIdentifier=bottleneck
 
 [Install]
 WantedBy=multi-user.target
