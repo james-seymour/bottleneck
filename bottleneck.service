@@ -8,7 +8,7 @@ User=root
 WorkingDirectory=/bottleneck
 
 # Run the script with uv
-ExecStart=/usr/bin/python3 uv run --env-file .env your_script.py
+ExecStart=/root/.local/bin/uv run --env-file .env your_script.py
 
 # Logging
 StandardOutput=journal
