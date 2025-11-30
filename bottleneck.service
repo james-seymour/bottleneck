@@ -1,0 +1,19 @@
+[Unit]
+Description=Bottleneck Notifier
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/bottleneck
+
+# Run the script with uv
+ExecStart=/usr/bin/python3 uv run --env-file .env your_script.py
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=my-script
+
+[Install]
+WantedBy=multi-user.target
