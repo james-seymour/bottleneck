@@ -22,6 +22,7 @@ class Config(BaseModel):
     # comma separated
     RELEVANT_POSTCODES: str | None = None
     RELEVANT_SUBURBS: str | None = None
+    RELEVANT_TOWARDS_SUBURBS: str | None = None
     RELEVANT_EVENT_TYPES: str | None = None
 
     @staticmethod
@@ -43,6 +44,7 @@ class EventRelevancyConfig:
     types: set[models.EventType]
     postcodes: set[int]
     suburbs: set[str]
+    towards_suburbs: set[str]
 
     @staticmethod
     def from_config(config: Config) -> EventRelevancyConfig:
@@ -57,8 +59,13 @@ class EventRelevancyConfig:
             else set()
         )
         suburbs = (
-            {s.strip().lower() for s in config.RELEVANT_SUBURBS.split(",")}
+            {s.strip() for s in config.RELEVANT_SUBURBS.split(",")}
             if config.RELEVANT_SUBURBS is not None
+            else set()
+        )
+        towards_suburbs = (
+            {s.strip() for s in config.RELEVANT_TOWARDS_SUBURBS.split(",")}
+            if config.RELEVANT_TOWARDS_SUBURBS is not None
             else set()
         )
 
@@ -66,6 +73,7 @@ class EventRelevancyConfig:
             types=types,
             postcodes=postcodes,
             suburbs=suburbs,
+            towards_suburbs=towards_suburbs,
         )
 
 
@@ -98,7 +106,7 @@ class NotifiedEvents:
     def contains(self, event: models.Event) -> bool:
         return any(ne.event_id == event.id for ne in self.model.events)
 
-    def append_event(self, event: models.Event):
-        self.model.events.append(models.NotifiedEvent(event_id=event.id))
+    def append_event(self, event: models.Event, reason: str) -> None:
+        self.model.events.append(models.NotifiedEvent(event_id=event.id, reason=reason))
 
         self.path.write_text(self.model.model_dump_json(indent=2))

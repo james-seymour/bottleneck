@@ -7,10 +7,20 @@ from pydantic import BaseModel
 
 Status: TypeAlias = Literal["Published"]
 
+ImpactType: TypeAlias = Literal[
+    "Closures",
+    "Lanes affected",
+    "Lanes blocked",
+    "N/A",
+    "No blockage",
+    "Road restricted",
+]
+
 
 class Impact(BaseModel):
-    impact_type: str
+    impact_type: ImpactType | str
     impact_subtype: str | None
+    towards: str | None
     delay: str | None
 
 
@@ -78,3 +88,4 @@ class EventsResponse(BaseModel):
 
 class NotifiedEvent(BaseModel):
     event_id: int
+    reason: str

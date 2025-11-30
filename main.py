@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Literal, TypeAlias
 
 import httpx
 import structlog
@@ -23,29 +24,40 @@ async def fetch_events(traffic_client: httpx.AsyncClient) -> list[models.Event]:
     return [f.properties for f in features.features]
 
 
-def is_relevant_event(
+RelevancyReason: TypeAlias = Literal[
+    "irrelevant",
+    "relevant-postcode",
+    "relevant-suburb",
+    "relevant-towards",
+]
+
+
+def determine_relevancy(
     relevancy_config: config.EventRelevancyConfig,
     event: models.Event,
-) -> bool:
+) -> RelevancyReason:
     if event.event_type not in relevancy_config.types:
-        return False
+        return "irrelevant"
 
     postcodes_parsed = util.parse_postcode(event.road_summary.postcode)
 
     if any(p in relevancy_config.postcodes for p in postcodes_parsed):
-        return True
+        return "relevant-postcode"
 
     parsed_suburbs = util.parse_suburbs(event.road_summary.locality)
 
-    if any(s.lower() in relevancy_config.suburbs for s in parsed_suburbs):
-        return True
+    if any(s in relevancy_config.suburbs for s in parsed_suburbs):
+        return "relevant-suburb"
 
-    return False
+    if event.impact.towards in relevancy_config.towards_suburbs:
+        return "relevant-towards"
+
+    return "irrelevant"
 
 
 async def notify_home_assistant(*, ha_client: httpx.AsyncClient, event: models.Event):
     title = f"{event.event_type} - {event.road_summary.locality}"
-    description = f"{event.road_summary.road_name} - {event.impact.impact_type}"
+    description = f"{event.impact.impact_type} on {event.road_summary.road_name} - {event.impact.delay or 'No delay reported'}"
 
     res = await ha_client.post(
         "/api/events/traffic_event",
@@ -77,9 +89,10 @@ async def main(cfg: config.Config):
         events = await fetch_events(traffic_client=traffic_client)
 
         relevant_events = [
-            e
+            (e, r)
             for e in events
-            if is_relevant_event(relevancy_config=relevancy_config, event=e)
+            if (r := determine_relevancy(relevancy_config=relevancy_config, event=e))
+            != "irrelevant"
         ]
 
         if len(relevant_events) == 0:
@@ -89,7 +102,7 @@ async def main(cfg: config.Config):
             )
             return
 
-        for event in relevant_events:
+        for event, reason in relevant_events:
             if notified_events.contains(event):
                 logger.info(
                     "event already notified",
@@ -100,7 +113,9 @@ async def main(cfg: config.Config):
                 continue
 
             await notify_home_assistant(ha_client=ha_client, event=event)
-            notified_events.append_event(event)
+            notified_events.append_event(event=event, reason=reason)
+
+            await asyncio.sleep(3)  # delay notifications for apple timeout
 
 
 if __name__ == "__main__":
