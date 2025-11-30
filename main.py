@@ -1,141 +1,85 @@
 from __future__ import annotations
 
 import asyncio
-import os
-from datetime import datetime
-from functools import cached_property
-from typing import Literal, TypeAlias
 
 import httpx
 import structlog
-from pydantic import BaseModel, SecretStr
 from whenever import ZonedDateTime
+
+import config
+import models
+import util
 
 logger = structlog.stdlib.get_logger()
 
 
-class Config(BaseModel):
-    QLD_TRAFFIC_BASE_URL: str = "https://api.qldtraffic.qld.gov.au/v2/"
-    QLD_TRAFFIC_API_KEY: SecretStr
-
-    HOME_ASSISTANT_BASE_URL: str
-    HOME_ASSISTANT_ACCESS_TOKEN: SecretStr
-
-    # comma separated
-    RELEVANT_POSTCODES: str
-    RELEVANT_SUBURBS: str
-
-    @staticmethod
-    def from_env() -> Config:
-        return Config.model_validate(os.environ)
-
-    @cached_property
-    def relevant_postcodes(self) -> set[int]:
-        return {int(p) for p in self.RELEVANT_POSTCODES.split(",")}
-
-    @cached_property
-    def relevant_suburbs(self) -> set[str]:
-        return {s.strip().lower() for s in self.RELEVANT_SUBURBS.split(",")}
-
-
-Status: TypeAlias = Literal["Published"]  # TODO
-
-
-class Impact(BaseModel):
-    impact_type: str
-    impact_subtype: str | None
-    delay: str | None
-
-
-class RoadSummary(BaseModel):
-    road_name: str | None
-    locality: str | None
-    postcode: str
-    local_government_area: str
-
-
-class Properties(BaseModel):
-    area_alert: bool
-    status: Status | str  # TODO
-    published: datetime | None
-    event_type: str
-    event_subtype: str
-    impact: Impact
-    event_priority: str
-    road_summary: RoadSummary
-
-
-class Event(BaseModel):
-    properties: Properties
-
-
-class EventsResponse(BaseModel):
-    features: list[Event]
-
-
-def parse_postcode(postcodes: str) -> list[int]:
-    if postcodes == "-":
-        return []
-
-    return [int(p) for p in postcodes.split(" / ") if p.isdigit()]
-
-
-async def fetch_events(traffic_client: httpx.AsyncClient) -> EventsResponse:
+async def fetch_events(traffic_client: httpx.AsyncClient) -> list[models.Event]:
     response = await traffic_client.get("/events")
 
     response.raise_for_status()
 
-    return EventsResponse.model_validate_json(response.text)
+    features = models.EventsResponse.model_validate_json(response.text)
+
+    return [f.properties for f in features.features]
 
 
-def is_relevant_event(config: Config, event: Event) -> bool:
-    postcodes_parsed = parse_postcode(event.properties.road_summary.postcode)
+def is_relevant_event(
+    relevancy_config: config.EventRelevancyConfig,
+    event: models.Event,
+) -> bool:
+    if event.event_type not in relevancy_config.types:
+        return False
 
-    if any(p in config.relevant_postcodes for p in postcodes_parsed):
+    postcodes_parsed = util.parse_postcode(event.road_summary.postcode)
+
+    if any(p in relevancy_config.postcodes for p in postcodes_parsed):
+        return True
+
+    parsed_suburbs = util.parse_suburbs(event.road_summary.locality)
+
+    if any(s.lower() in relevancy_config.suburbs for s in parsed_suburbs):
         return True
 
     return False
 
 
-async def notify_home_assistant(
-    ha_client: httpx.AsyncClient,
-    relevant_events: list[Event],
-):
-    most_relevant_event, *rest = relevant_events
-
-    most_relevant_event_summary = f"{most_relevant_event.properties.event_subtype}"
-
-    description = most_relevant_event_summary + (
-        f" + {len(rest)} more" if len(rest) > 0 else ""
-    )
+async def notify_home_assistant(*, ha_client: httpx.AsyncClient, event: models.Event):
+    title = f"{event.event_type} - {event.road_summary.locality}"
+    description = f"{event.road_summary.road_name} - {event.impact.impact_type}"
 
     res = await ha_client.post(
         "/api/events/traffic_event",
-        json={"description": description},
+        json={"title": title, "description": description},
     )
 
     res.raise_for_status()
 
 
-async def main(config: Config):
+async def main(cfg: config.Config):
     executed_at = ZonedDateTime.now("Australia/Brisbane")
 
-    async with (
-        httpx.AsyncClient(
-            base_url=config.QLD_TRAFFIC_BASE_URL,
-            params={"apikey": config.QLD_TRAFFIC_API_KEY.get_secret_value()},
-        ) as traffic_client,
-        httpx.AsyncClient(
-            base_url=config.HOME_ASSISTANT_BASE_URL,
-            headers={
-                "Authorization": f"Bearer {config.HOME_ASSISTANT_ACCESS_TOKEN.get_secret_value()}"
-            },
-        ) as ha_client,
-    ):
+    traffic_client = httpx.AsyncClient(
+        base_url=cfg.QLD_TRAFFIC_BASE_URL,
+        params={"apikey": cfg.QLD_TRAFFIC_API_KEY.get_secret_value()},
+    )
+
+    ha_client = httpx.AsyncClient(
+        base_url=cfg.HOME_ASSISTANT_BASE_URL,
+        headers={
+            "Authorization": f"Bearer {cfg.HOME_ASSISTANT_ACCESS_TOKEN.get_secret_value()}"
+        },
+    )
+
+    relevancy_config = config.EventRelevancyConfig.from_config(cfg)
+    notified_events = config.NotifiedEvents.from_config(cfg)
+
+    async with traffic_client, ha_client:
         events = await fetch_events(traffic_client=traffic_client)
 
         relevant_events = [
-            e for e in events.features if is_relevant_event(config=config, event=e)
+            e
+            for e in events
+            if is_relevant_event(relevancy_config=relevancy_config, event=e)
         ]
 
         if len(relevant_events) == 0:
@@ -145,15 +89,21 @@ async def main(config: Config):
             )
             return
 
-        print(relevant_events)
+        for event in relevant_events:
+            if notified_events.contains(event):
+                logger.info(
+                    "event already notified",
+                    event_id=event.id,
+                    event_type=event.event_type,
+                    locality=event.road_summary.locality,
+                )
+                continue
 
-        await notify_home_assistant(
-            ha_client=ha_client,
-            relevant_events=relevant_events,
-        )
+            await notify_home_assistant(ha_client=ha_client, event=event)
+            notified_events.append_event(event)
 
 
 if __name__ == "__main__":
-    config = Config.from_env()
+    cfg = config.Config.from_env()
 
-    asyncio.run(main(config=config))
+    asyncio.run(main(cfg=cfg))

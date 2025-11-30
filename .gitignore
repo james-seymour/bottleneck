@@ -9,5 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
+# state
+notified.json
+
 # env
 .env
